@@ -31,7 +31,24 @@ class GitLabReader(Reader):
         fileNames: list[str] = None,
         document_type: str = "Documentation",
     ) -> list[Document]:
+        """Ingest data into Weaviate
+        @parameter: bytes : list[str] - List of bytes
+        @parameter: contents : list[str] - List of string content
+        @parameter: paths : list[str] - List of paths to files
+        @parameter: fileNames : list[str] - List of file names
+        @parameter: document_type : str - Document type
+        @returns list[Document] - Lists of documents.
+        """
+        if fileNames is None:
+            fileNames = []
+        if paths is None:
+            paths = []
+        if contents is None:
+            contents = []
+        if bytes is None:
+            bytes = []
         documents = []
+
         if paths:
             for path in paths:
                 files = self.fetch_docs(path)
