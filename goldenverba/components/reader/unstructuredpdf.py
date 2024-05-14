@@ -109,9 +109,9 @@ class UnstructuredPDF(Reader):
         with open("reconstructed.pdf", "wb") as file:
             file.write(decoded_bytes)
 
-        file_data = {"files": open("reconstructed.pdf", "rb")}
-
-        response = requests.post(url, headers=headers, data=data, files=file_data)
+        with open("reconstructed.pdf", "rb") as file_data:
+            files = {"files": file_data}
+            response = requests.post(url, headers=headers, data=data, files=files)
 
         json_response = response.json()
 
