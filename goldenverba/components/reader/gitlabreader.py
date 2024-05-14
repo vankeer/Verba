@@ -53,7 +53,11 @@ class GitLabReader(Reader):
 
         if paths:
             for path in paths:
-                files = self.fetch_docs(path)
+                try:
+                    files = self.fetch_docs(path)
+                except Exception as e:
+                    msg.fail(f"Couldn't fetch, skipping {path}: {str(e)}")
+                    continue
 
                 for _file in files:
                     try:
@@ -92,10 +96,14 @@ class GitLabReader(Reader):
         msg.good(f"Loaded {len(documents)} documents")
         return documents
 
-    def fetch_docs(self, path: str) -> list:
-        project_id, branch, folder_path = self._parse_path(path)
+    def fetch_docs(self, path: str, project_id=None, branch=None) -> list:
+        if project_id is None or branch is None:
+            project_id, branch, folder_path = self._parse_path(path)
+        else:
+            folder_path = path
 
-        url = f"https://gitlab.com/api/v4/projects/{project_id}/repository/tree?ref={branch}&path={folder_path}&per_page=100"
+        encoded_folder_path = urllib.parse.quote(folder_path, safe="")
+        url = f"https://gitlab.com/api/v4/projects/{project_id}/repository/tree?ref={branch}&path={encoded_folder_path}&per_page=100"
         headers = {
             "Authorization": f"Bearer {os.environ.get('GITLAB_TOKEN', '')}",
         }
@@ -106,12 +114,14 @@ class GitLabReader(Reader):
         if os.environ.get("UNSTRUCTURED_API_URL") or os.environ.get("UNSTRUCTURED_API_KEY"):
             supported_file_types += (".pdf",)
 
-        files = [
-            item["path"]
-            for item in response.json()
-            if item["type"] == "blob"
-            and item["path"].endswith(supported_file_types)
-        ]
+        items = response.json()
+        files = []
+        for item in items:
+            if item["type"] == "blob" and item["path"].endswith(supported_file_types):
+                files.append({"path": item["path"], "project_id": project_id, "branch": branch})
+            elif item["type"] == "tree":
+                files.extend(self.fetch_docs(item["path"], project_id, branch))
+
         msg.info(
             f"Fetched {len(files)} filenames from {url} (checking folder {folder_path})"
         )
