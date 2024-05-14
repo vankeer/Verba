@@ -70,13 +70,17 @@ class GitLabReader(Reader):
                     if _file.endswith(".pdf"):
                         # Use UnstructuredPDF to process PDF content
                         filename = _file.split("/")[-1]
-                        parsed_docs = self.pdf_reader.load_bytes(
-                            content, 
-                            filename, 
-                            document_type
-                        )
-                        for doc in parsed_docs:
-                            documents.append(doc)
+                        try:
+                            parsed_docs = self.pdf_reader.load_bytes(
+                                content,
+                                filename,
+                                document_type
+                            )
+                            for doc in parsed_docs:
+                                documents.append(doc)
+                        except Exception as e:
+                            msg.warn(f"Couldn't load PDF, skipping {_file}: {str(e)}")
+                            continue
                     elif ".json" in _file:
                         json_obj = json.loads(content)
                         document = Document.from_json(json_obj)
