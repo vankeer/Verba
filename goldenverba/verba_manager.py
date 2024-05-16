@@ -64,6 +64,8 @@ class VerbaManager:
             bytes, contents, paths, fileNames, document_type
         )
 
+        msg.info(f"Loaded {len(loaded_documents)} documents")
+
         filtered_documents = []
 
         # Check if document names exist in DB
@@ -71,9 +73,13 @@ class VerbaManager:
             if not self.check_if_document_exits(document):
                 filtered_documents.append(document)
 
+        msg.info(f"Filtered down to {len(filtered_documents)} documents")
+
         modified_documents = self.chunker_manager.chunk(
             filtered_documents, units, overlap
         )
+
+        msg.info(f"Chunked into {len(modified_documents)} documents")
 
         if self.embedder_manager.embed(modified_documents, client=self.client):
             msg.good("Embedding successful")

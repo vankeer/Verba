@@ -56,7 +56,10 @@ class GithubReader(Reader):
 
                     for _file in files:
                         try:
+                            filename = _file.split("/")[-1]
+                            msg.info(f"Loading {_file}")
                             content, link, _path = self.download_file(path, _file)
+                            msg.info(f"Downloaded {_path}")
                         except Exception as e:
                             msg.warn(f"Couldn't load, skipping {_file}: {str(e)}")
                             continue

@@ -74,6 +74,7 @@ class GitLabReader(Reader):
 
                     filename = _path.split("/")[-1]
                     if _path.endswith(".pdf"):
+                        msg.info(f"Reading PDF {_path}")
                         # Use UnstructuredPDF to process PDF content
                         try:
                             parsed_docs = self.unstructured_pdf.load_bytes(
@@ -99,11 +100,13 @@ class GitLabReader(Reader):
                             except Exception as e:
                                 msg.warn(f"Skipping; couldn't load PDF with normal PDF reader for {_path}: {str(e)}")
                                 continue
-                    elif ".json" in _path:
+                    elif _path.endswith(".json"):
+                        msg.info(f"Reading JSON {_path}")
                         json_obj = json.loads(content)
                         document = Document.from_json(json_obj)
                         documents.append(document)
                     else:
+                        msg.info(f"Reading document {_path}")
                         document = Document(
                             text=content,
                             type=document_type,
@@ -142,10 +145,12 @@ class GitLabReader(Reader):
             files = []
             for item in items:
                 if item["type"] == "blob" and item["path"].endswith(self.supported_file_types):
+                    msg.info(f"Found file: {item['path']}")
                     files.append({"path": item["path"], "project_id": project_id, "branch": branch})
                 elif item["type"] == "tree":
                     # Ensure that item["path"] is a string before recursively calling fetch_docs
                     if isinstance(item["path"], str):
+                        msg.info(f"Exploring folder: {item['path']}")
                         files.extend(self.fetch_docs(item["path"], project_id, branch))
                     else:
                         raise TypeError(f"Expected a string path for recursive fetch_docs call, got {type(item['path'])} instead: {item['path']}")
@@ -160,6 +165,7 @@ class GitLabReader(Reader):
 
     def download_file(self, path: str, file_path: str) -> str:
         project_id, branch, _ = self._parse_path(path)
+        msg.info(f"Downloading {file_path} from {project_id}/{branch}")
 
         if not isinstance(file_path, str):
             raise ValueError(f"file_path must be a string, got {type(file_path)} instead: {file_path}")
