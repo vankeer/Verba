@@ -10,6 +10,7 @@ from wasabi import msg
 from goldenverba.components.reader.document import Document
 from goldenverba.components.reader.interface import InputForm, Reader
 from goldenverba.components.reader.unstructuredpdf import UnstructuredPDF
+from goldenverba.components.reader.pdfreader import PDFReader
 
 
 class GitLabReader(Reader):
@@ -23,7 +24,11 @@ class GitLabReader(Reader):
         self.requires_env = ["GITLAB_TOKEN"]
         self.description = "Downloads only text files from a GitLab repository and ingests it into Verba. Use this format {project_id}/{branch}/{folder}"
         self.input_form = InputForm.INPUT.value
-        self.pdf_reader = UnstructuredPDF()
+        self.pdf_reader = PDFReader()
+        self.unstructured_pdf = UnstructuredPDF()
+        self.supported_file_types = (".md", ".mdx", ".txt", ".json")
+        if os.environ.get("UNSTRUCTURED_API_URL") or os.environ.get("UNSTRUCTURED_API_KEY"):
+            self.supported_file_types += (".pdf",)
 
     def load(
         self,
@@ -61,17 +66,17 @@ class GitLabReader(Reader):
 
                 for _file in files:
                     try:
-                        content, link, _path = self.download_file(path, _file)
+                        content, link, _path = self.download_file(path, _file["path"])
                         document = None
                     except Exception as e:
                         msg.warn(f"Couldn't load, skipping {_file}: {str(e)}")
                         continue
 
-                    if _file.endswith(".pdf"):
+                    filename = _path.split("/")[-1]
+                    if _path.endswith(".pdf"):
                         # Use UnstructuredPDF to process PDF content
-                        filename = _file.split("/")[-1]
                         try:
-                            parsed_docs = self.pdf_reader.load_bytes(
+                            parsed_docs = self.unstructured_pdf.load_bytes(
                                 content,
                                 filename,
                                 document_type
@@ -79,9 +84,22 @@ class GitLabReader(Reader):
                             for doc in parsed_docs:
                                 documents.append(doc)
                         except Exception as e:
-                            msg.warn(f"Couldn't load PDF, skipping {_file}: {str(e)}")
-                            continue
-                    elif ".json" in _file:
+                            msg.warn(f"Couldn't load PDF with Unstructured, trying with normal PDF reader for {_file}: {str(e)}")
+                            try:
+                                # Decode the base64 content to binary
+                                pdf_bytes = base64.b64decode(content)
+                                # Save the decoded content to a temporary file
+                                temp_file_path = "temp_" + filename
+                                with open(temp_file_path, 'wb') as f:
+                                    f.write(pdf_bytes)
+                                # Load the PDF using PDFReader
+                                parsed_docs = self.pdf_reader.load(paths=[temp_file_path])
+                                for doc in parsed_docs:
+                                    documents.append(doc)
+                            except Exception as e:
+                                msg.warn(f"Skipping; couldn't load PDF with normal PDF reader for {_path}: {str(e)}")
+                                continue
+                    elif ".json" in _path:
                         json_obj = json.loads(content)
                         document = Document.from_json(json_obj)
                         documents.append(document)
@@ -89,7 +107,7 @@ class GitLabReader(Reader):
                         document = Document(
                             text=content,
                             type=document_type,
-                            name=_file,
+                            name=filename,
                             link=link,
                             path=_path,
                             timestamp=str(datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
@@ -106,34 +124,47 @@ class GitLabReader(Reader):
         else:
             folder_path = path
 
-        encoded_folder_path = urllib.parse.quote(folder_path, safe="")
-        url = f"https://gitlab.com/api/v4/projects/{project_id}/repository/tree?ref={branch}&path={encoded_folder_path}&per_page=100"
-        headers = {
-            "Authorization": f"Bearer {os.environ.get('GITLAB_TOKEN', '')}",
-        }
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-
-        supported_file_types = (".md", ".mdx", ".txt", ".json")
-        if os.environ.get("UNSTRUCTURED_API_URL") or os.environ.get("UNSTRUCTURED_API_KEY"):
-            supported_file_types += (".pdf",)
-
-        items = response.json()
         files = []
-        for item in items:
-            if item["type"] == "blob" and item["path"].endswith(supported_file_types):
-                files.append({"path": item["path"], "project_id": project_id, "branch": branch})
-            elif item["type"] == "tree":
-                files.extend(self.fetch_docs(item["path"], project_id, branch))
+        try:
+            # Ensure the folder path is a string before encoding
+            if not isinstance(folder_path, str):
+                raise ValueError(f"folder_path must be a string, got {type(folder_path)} instead: {folder_path}")
+        
+            encoded_folder_path = urllib.parse.quote(folder_path.encode("utf-8"), safe="")
+            url = f"https://gitlab.com/api/v4/projects/{project_id}/repository/tree?ref={branch}&path={encoded_folder_path}&per_page=100"
+            headers = {
+                "Authorization": f"Bearer {os.environ.get('GITLAB_TOKEN', '')}",
+            }
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
 
-        msg.info(
-            f"Fetched {len(files)} filenames from {url} (checking folder {folder_path})"
-        )
+            items = response.json()
+            files = []
+            for item in items:
+                if item["type"] == "blob" and item["path"].endswith(self.supported_file_types):
+                    files.append({"path": item["path"], "project_id": project_id, "branch": branch})
+                elif item["type"] == "tree":
+                    # Ensure that item["path"] is a string before recursively calling fetch_docs
+                    if isinstance(item["path"], str):
+                        files.extend(self.fetch_docs(item["path"], project_id, branch))
+                    else:
+                        raise TypeError(f"Expected a string path for recursive fetch_docs call, got {type(item['path'])} instead: {item['path']}")
+
+            msg.info(
+                f"Fetched {len(files)} filenames from {url} (checking folder {folder_path})"
+            )
+        except Exception as e:
+            msg.fail(f"Couldn't fetch {path}: {str(e)}")
+
         return files
 
     def download_file(self, path: str, file_path: str) -> str:
         project_id, branch, _ = self._parse_path(path)
-        encoded_file_path = urllib.parse.quote(file_path, safe="")
+
+        if not isinstance(file_path, str):
+            raise ValueError(f"file_path must be a string, got {type(file_path)} instead: {file_path}")
+
+        encoded_file_path = urllib.parse.quote(file_path.encode("utf-8"), safe="")
 
         url = f"https://gitlab.com/api/v4/projects/{project_id}/repository/files/{encoded_file_path}/raw?ref={branch}"
         headers = {
