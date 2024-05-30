@@ -2,12 +2,15 @@ import base64
 import json
 import os
 from datetime import datetime
+import urllib.parse
 
 import requests
 from wasabi import msg
 
 from goldenverba.components.reader.document import Document
 from goldenverba.components.reader.interface import InputForm, Reader
+from goldenverba.components.reader.unstructuredpdf import UnstructuredPDF
+from goldenverba.components.reader.pdfreader import PDFReader
 
 
 class GithubReader(Reader):
@@ -21,6 +24,11 @@ class GithubReader(Reader):
         self.requires_env = ["GITHUB_TOKEN"]
         self.description = "Downloads only text files from a GitHub repository and ingests it into Verba. Use this format {owner}/{repo}/{branch}/{folder}"
         self.input_form = InputForm.INPUT.value
+        self.pdf_reader = PDFReader()
+        self.unstructured_pdf = UnstructuredPDF()
+        self.supported_file_types = (".md", ".mdx", ".txt", ".json")
+        if os.environ.get("UNSTRUCTURED_API_URL") or os.environ.get("UNSTRUCTURED_API_KEY"):
+            self.supported_file_types += (".pdf", ".epub",)
 
     def load(
         self,
@@ -64,14 +72,46 @@ class GithubReader(Reader):
                             msg.warn(f"Couldn't load, skipping {_file}: {str(e)}")
                             continue
 
-                        if ".json" in _file:
+                        if filename.endswith(".pdf") or filename.endswith(".epub"):
+                            msg.info(f"Reading PDF {filename}")
+                            # Use UnstructuredPDF to process PDF content
+                            try:
+                                parsed_docs = self.unstructured_pdf.load_bytes(
+                                    content,
+                                    filename,
+                                    document_type
+                                )
+                                msg.info(f"Loaded {len(parsed_docs)} documents with UnstructuredPDF")
+                                for doc in parsed_docs:
+                                    documents.append(doc)
+                            except Exception as e:
+                                msg.warn(f"Couldn't load PDF with Unstructured, trying with normal PDF reader for {_file}: {str(e)}")
+                                try:
+                                    # Decode the base64 content to binary
+                                    pdf_bytes = base64.b64decode(content)
+                                    # Save the decoded content to a temporary file
+                                    temp_file_path = "temp_" + filename
+                                    with open(temp_file_path, 'wb') as f:
+                                        f.write(pdf_bytes)
+                                    # Load the PDF using PDFReader
+                                    parsed_docs = self.pdf_reader.load(paths=[temp_file_path])
+                                    msg.info(f"Loaded {len(parsed_docs)} documents with PDFReader")
+                                    for doc in parsed_docs:
+                                        documents.append(doc)
+                                except Exception as e:
+                                    msg.warn(f"Skipping; couldn't load PDF with normal PDF reader for {_path}: {str(e)}")
+                                    continue
+                        elif filename.endswith(".json"):
+                            msg.info(f"Reading JSON {filename}")
                             json_obj = json.loads(str(content))
                             try:
                                 document = Document.from_json(json_obj)
+                                documents.append(document)
                             except Exception as e:
                                 raise Exception(f"Loading JSON failed {e}")
 
                         else:
+                            msg.info(f"Reading document {filename}")
                             document = Document(
                                 text=content,
                                 type=document_type,
@@ -83,7 +123,7 @@ class GithubReader(Reader):
                                 ),
                                 reader=self.name,
                             )
-                        documents.append(document)
+                            documents.append(document)
 
         msg.good(f"Loaded {len(documents)} documents")
         return documents
@@ -116,6 +156,8 @@ class GithubReader(Reader):
                 or item["path"].endswith(".mdx")
                 or item["path"].endswith(".txt")
                 or item["path"].endswith(".json")
+                or item["path"].endswith(".pdf")
+                or item["path"].endswith(".epub")
             )
         ]
         msg.info(
@@ -134,7 +176,12 @@ class GithubReader(Reader):
         repo = split[1]
         branch = split[2] if len(split) > 2 else "main"
 
-        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}?ref={branch}"
+        if not isinstance(file_path, str):
+            raise ValueError(f"file_path must be a string, got {type(file_path)} instead: {file_path}")
+
+        encoded_file_path = urllib.parse.quote(file_path.encode("utf-8"), safe="")
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_file_path}?ref={branch}"
         headers = {
             "Authorization": f"token {os.environ.get('GITHUB_TOKEN', '')}",
             "Accept": "application/vnd.github.v3+json",
@@ -142,9 +189,24 @@ class GithubReader(Reader):
         response = requests.get(url, headers=headers)
         response.raise_for_status()
 
-        content_b64 = response.json()["content"]
-        link = response.json()["html_url"]
-        path = response.json()["path"]
-        content = base64.b64decode(content_b64).decode("utf-8")
+        response_json = response.json()
+        # msg.info(f"Response JSON: {response_json}")
+
+        # if file is a PDF, encode the PDF content to base64
+        if file_path.endswith(".pdf") or file_path.endswith(".epub"):
+            download_url = response_json["download_url"]
+            # Download the bytes string from the download_url as content
+            download_response = requests.get(download_url)
+            download_response.raise_for_status()
+            msg.info(f"Downloaded {download_url}")
+            content_b64 = base64.b64encode(download_response.content)
+            content = content_b64.decode("utf-8")
+            msg.info(f"Content starts with: {content[:20]}")
+        else:
+            content_b64 = response_json["content"]
+            content = base64.b64decode(content_b64).decode("utf-8")
+
+        link = response_json["html_url"]
+        path = response_json["path"]
         msg.info(f"Downloaded {url}")
         return (content, link, path)

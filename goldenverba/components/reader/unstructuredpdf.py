@@ -102,7 +102,7 @@ class UnstructuredPDF(Reader):
         }
 
         data = {
-            "strategy": "auto",
+            "strategy": "hi_res",
         }
 
         decoded_bytes = base64.b64decode(bytes_string)
